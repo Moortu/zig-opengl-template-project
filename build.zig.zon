@@ -31,15 +31,16 @@
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
-    .dependencies = .{},
-    // Specifies the set of files and directories that are included in this package.
-    // Only files and directories listed here are included in the `hash` that
-    // is computed for this package. Only files listed here will remain on disk
-    // when using the zig package manager. As a rule of thumb, one should list
-    // files required for compilation plus any license(s).
-    // Paths are relative to the build root. Use the empty string (`""`) to refer to
-    // the build root itself.
-    // A directory listed here means that all files within, recursively, are included.
+    .dependencies = .{
+        .zigglgen = .{
+            .url = "git+https://github.com/castholm/zigglgen.git#b624cc7d2e984f61c63a83a3d0ad6c686782f961",
+            .hash = "zigglgen-0.4.0-bmyqLV6PLwAt0VCiGVgz6kZ448zaiTix2Z8MXEEuN4Vi",
+        },
+        .sdl = .{
+            .url = "git+https://github.com/castholm/SDL.git#1d4b8dcc03bd216712b55318b4ad2402b5511490",
+            .hash = "sdl-0.3.1+3.2.24-7uIn9L9AfwFQf90JcTh3Slw__ZA8SEomk6fQI9F8ItY0",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

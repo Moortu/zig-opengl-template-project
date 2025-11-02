@@ -1,10 +1,20 @@
 const std = @import("std");
-const learn_opengl = @import("learn_opengl");
+const imgui = @import("imgui");
+const gl = @import("gl");
+const c = @cImport({
+    @cDefine("SDL_DISABLE_OLD_NAMES", {});
+    @cInclude("SDL3/SDL.h");
+    @cInclude("SDL3/SDL_revision.h");
+    @cDefine("SDL_MAIN_HANDLED", {}); // We are providing our own entry point
+    @cInclude("SDL3/SDL_main.h");
+});
 
 pub fn main() !void {
     // Prints to stderr, ignoring potential errors.
     std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-    try learn_opengl.bufferedPrint();
+
+    // TODO: Add OpenGL + ImGui initialization here
+    std.debug.print("OpenGL + ImGui application started!\n", .{});
 }
 
 test "simple test" {
@@ -25,3 +35,4 @@ test "fuzz example" {
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{});
 }
+
