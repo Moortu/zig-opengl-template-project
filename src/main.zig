@@ -83,11 +83,12 @@ var ibo: c_uint = undefined;
 
 var uptime: std.time.Timer = undefined;
 
-fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
-    _ = appstate;
-    _ = argv;
+// ============================================================================
+// WINDOW MANAGEMENT FUNCTIONS
+// ============================================================================
 
-    std.log.debug("{s} {s}", .{ target_triple, @tagName(builtin.mode) });
+/// Initialize SDL and print version info
+fn initSDL() !void {
     const platform: [*:0]const u8 = c.SDL_GetPlatform();
     sdl_log.debug("SDL platform: {s}", .{platform});
     sdl_log.debug("SDL build time version: {d}.{d}.{d}", .{
@@ -96,23 +97,22 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
         c.SDL_MICRO_VERSION,
     });
     sdl_log.debug("SDL build time revision: {s}", .{c.SDL_REVISION});
-    {
-        const version = c.SDL_GetVersion();
-        sdl_log.debug("SDL runtime version: {d}.{d}.{d}", .{
-            c.SDL_VERSIONNUM_MAJOR(version),
-            c.SDL_VERSIONNUM_MINOR(version),
-            c.SDL_VERSIONNUM_MICRO(version),
-        });
-        const revision: [*:0]const u8 = c.SDL_GetRevision();
-        sdl_log.debug("SDL runtime revision: {s}", .{revision});
-    }
+    
+    const version = c.SDL_GetVersion();
+    sdl_log.debug("SDL runtime version: {d}.{d}.{d}", .{
+        c.SDL_VERSIONNUM_MAJOR(version),
+        c.SDL_VERSIONNUM_MINOR(version),
+        c.SDL_VERSIONNUM_MICRO(version),
+    });
+    const revision: [*:0]const u8 = c.SDL_GetRevision();
+    sdl_log.debug("SDL runtime revision: {s}", .{revision});
 
     try errify(c.SDL_SetAppMetadata("Hexagon!", "0.0.0", "example.zig-examples.opengl-hexagon"));
-
     try errify(c.SDL_Init(c.SDL_INIT_VIDEO));
-    // We don't need to call 'SDL_Quit()' when using main callbacks.
+}
 
-    // Set relevant OpenGL context attributes before creating the window.
+/// Configure OpenGL context attributes based on the API version
+fn configureOpenGLAttributes() !void {
     try errify(c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, gl.info.version_major));
     try errify(c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, gl.info.version_minor));
     try errify(c.SDL_GL_SetAttribute(
@@ -130,31 +130,59 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
         c.SDL_GL_CONTEXT_FLAGS,
         if (gl.info.api == .gl and gl.info.version_major >= 3) c.SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG else 0,
     ));
+}
 
+/// Create the window and OpenGL context
+fn createWindow() !void {
     window = try errify(c.SDL_CreateWindow("Hexagon!", 640, 480, c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_RESIZABLE));
-    errdefer c.SDL_DestroyWindow(window);
-
     gl_context = try errify(c.SDL_GL_CreateContext(window));
-    errdefer errify(c.SDL_GL_DestroyContext(gl_context)) catch {};
-
     try errify(c.SDL_GL_MakeCurrent(window, gl_context));
-    errdefer errify(c.SDL_GL_MakeCurrent(window, null)) catch {};
+}
 
+/// Load OpenGL function pointers
+fn initOpenGL() !void {
     if (!gl_procs.init(&c.SDL_GL_GetProcAddress)) return error.GlInitFailed;
-
     gl.makeProcTableCurrent(&gl_procs);
-    errdefer gl.makeProcTableCurrent(null);
+}
 
-    const shader_version = switch (gl.info.api) {
-        .gl => (
-            \\#version 410 core
-            \\
-        ),
-        .gles, .glsc => (
-            \\#version 300 es
-            \\
-        ),
+// ============================================================================
+// GRAPHICS FUNCTIONS
+// ============================================================================
+
+/// Compile a shader and check for errors
+fn compileShader(shader_type: c_uint, version: [:0]const u8, source: [:0]const u8) !c_uint {
+    var success: c_int = undefined;
+    var info_log_buf: [512:0]u8 = undefined;
+
+    const shader = gl.CreateShader(shader_type);
+    if (shader == 0) return error.GlCreateShaderFailed;
+    errdefer gl.DeleteShader(shader);
+
+    const sources = [_][*:0]const u8{ version.ptr, source.ptr };
+    const lengths = [_]c_int{ @intCast(version.len), @intCast(source.len) };
+
+    gl.ShaderSource(shader, 2, &sources, &lengths);
+    gl.CompileShader(shader);
+    gl.GetShaderiv(shader, gl.COMPILE_STATUS, (&success)[0..1]);
+    
+    if (success == gl.FALSE) {
+        gl.GetShaderInfoLog(shader, info_log_buf.len, null, &info_log_buf);
+        gl_log.err("{s}", .{std.mem.sliceTo(&info_log_buf, 0)});
+        return error.GlCompileShaderFailed;
+    }
+
+    return shader;
+}
+
+/// Create and link the shader program
+fn createShaderProgram() !c_uint {
+    // Shader version header
+    const shader_version: [:0]const u8 = switch (gl.info.api) {
+        .gl => "#version 410 core\n",
+        .gles, .glsc => "#version 300 es\n",
     };
+
+    // Vertex shader source
     const vertex_shader_source =
         \\// Width/height of the framebuffer
         \\uniform vec2 u_FramebufferSize;
@@ -170,34 +198,25 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
         \\out vec4 v_Color;
         \\
         \\void main() {
-        \\    // Scale the object to fit the framebuffer while maintaining its aspect ratio.
         \\    vec2 scale = min(u_FramebufferSize.yx / u_FramebufferSize.xy, vec2(1));
-        \\
-        \\    // Shrink the object slightly to fit the framebuffer even when rotated.
         \\    scale *= 0.875;
-        \\
         \\    float s = sin(u_Angle);
         \\    float c = cos(u_Angle);
-        \\
         \\    gl_Position = vec4(
         \\        (a_Position.x * c + a_Position.y * -s) * scale.x,
         \\        (a_Position.x * s + a_Position.y * c) * scale.y,
         \\        a_Position.zw
         \\    );
-        \\
         \\    v_Color = a_Color;
         \\}
         \\
     ;
+
+    // Fragment shader source
     const fragment_shader_source =
-        \\// OpenGL ES default precision statements
         \\precision highp float;
         \\precision highp int;
-        \\
-        \\// Color input from the vertex shader
         \\in vec4 v_Color;
-        \\
-        \\// Final color output
         \\out vec4 f_Color;
         \\
         \\void main() {
@@ -206,167 +225,155 @@ fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
         \\
     ;
 
-    program = gl.CreateProgram();
-    if (program == 0) return error.GlCreateProgramFailed;
-    errdefer gl.DeleteProgram(program);
+    // Compile shaders
+    const vertex_shader = try compileShader(gl.VERTEX_SHADER, shader_version, vertex_shader_source);
+    defer gl.DeleteShader(vertex_shader);
 
-    {
-        var success: c_int = undefined;
-        var info_log_buf: [512:0]u8 = undefined;
+    const fragment_shader = try compileShader(gl.FRAGMENT_SHADER, shader_version, fragment_shader_source);
+    defer gl.DeleteShader(fragment_shader);
 
-        const vertex_shader = gl.CreateShader(gl.VERTEX_SHADER);
-        if (vertex_shader == 0) return error.GlCreateVertexShaderFailed;
-        defer gl.DeleteShader(vertex_shader);
+    // Create and link program
+    const prog = gl.CreateProgram();
+    if (prog == 0) return error.GlCreateProgramFailed;
+    errdefer gl.DeleteProgram(prog);
 
-        gl.ShaderSource(
-            vertex_shader,
-            2,
-            &.{ shader_version, vertex_shader_source },
-            &.{ shader_version.len, vertex_shader_source.len },
-        );
-        gl.CompileShader(vertex_shader);
-        gl.GetShaderiv(vertex_shader, gl.COMPILE_STATUS, (&success)[0..1]);
-        if (success == gl.FALSE) {
-            gl.GetShaderInfoLog(vertex_shader, info_log_buf.len, null, &info_log_buf);
-            gl_log.err("{s}", .{std.mem.sliceTo(&info_log_buf, 0)});
-            return error.GlCompileVertexShaderFailed;
-        }
+    gl.AttachShader(prog, vertex_shader);
+    gl.AttachShader(prog, fragment_shader);
+    gl.LinkProgram(prog);
 
-        const fragment_shader = gl.CreateShader(gl.FRAGMENT_SHADER);
-        if (fragment_shader == 0) return error.GlCreateFragmentShaderFailed;
-        defer gl.DeleteShader(fragment_shader);
-
-        gl.ShaderSource(
-            fragment_shader,
-            2,
-            &.{ shader_version, fragment_shader_source },
-            &.{ shader_version.len, fragment_shader_source.len },
-        );
-        gl.CompileShader(fragment_shader);
-        gl.GetShaderiv(fragment_shader, gl.COMPILE_STATUS, (&success)[0..1]);
-        if (success == gl.FALSE) {
-            gl.GetShaderInfoLog(fragment_shader, info_log_buf.len, null, &info_log_buf);
-            gl_log.err("{s}", .{std.mem.sliceTo(&info_log_buf, 0)});
-            return error.GlCompileFragmentShaderFailed;
-        }
-
-        gl.AttachShader(program, vertex_shader);
-        gl.AttachShader(program, fragment_shader);
-        gl.LinkProgram(program);
-        gl.GetProgramiv(program, gl.LINK_STATUS, (&success)[0..1]);
-        if (success == gl.FALSE) {
-            gl.GetProgramInfoLog(program, info_log_buf.len, null, &info_log_buf);
-            gl_log.err("{s}", .{std.mem.sliceTo(&info_log_buf, 0)});
-            return error.LinkProgramFailed;
-        }
+    // Check link status
+    var success: c_int = undefined;
+    var info_log_buf: [512:0]u8 = undefined;
+    gl.GetProgramiv(prog, gl.LINK_STATUS, (&success)[0..1]);
+    if (success == gl.FALSE) {
+        gl.GetProgramInfoLog(prog, info_log_buf.len, null, &info_log_buf);
+        gl_log.err("{s}", .{std.mem.sliceTo(&info_log_buf, 0)});
+        return error.LinkProgramFailed;
     }
+
+    return prog;
+}
+
+/// Setup vertex buffers and attributes
+fn setupBuffers(shader_program: c_uint) !void {
+    // Generate buffers
+    gl.GenVertexArrays(1, (&vao)[0..1]);
+    gl.GenBuffers(1, (&vbo)[0..1]);
+    gl.GenBuffers(1, (&ibo)[0..1]);
+
+    // Bind VAO
+    gl.BindVertexArray(vao);
+    defer gl.BindVertexArray(0);
+
+    // Setup VBO with vertex data
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo);
+    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(hexagon_mesh.vertices)), &hexagon_mesh.vertices, gl.STATIC_DRAW);
+
+    // Configure vertex attributes
+    const position_attrib: c_uint = @intCast(gl.GetAttribLocation(shader_program, "a_Position"));
+    gl.EnableVertexAttribArray(position_attrib);
+    gl.VertexAttribPointer(
+        position_attrib,
+        @typeInfo(@FieldType(hexagon_mesh.Vertex, "position")).array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(hexagon_mesh.Vertex),
+        @offsetOf(hexagon_mesh.Vertex, "position"),
+    );
+
+    const color_attrib: c_uint = @intCast(gl.GetAttribLocation(shader_program, "a_Color"));
+    gl.EnableVertexAttribArray(color_attrib);
+    gl.VertexAttribPointer(
+        color_attrib,
+        @typeInfo(@FieldType(hexagon_mesh.Vertex, "color")).array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(hexagon_mesh.Vertex),
+        @offsetOf(hexagon_mesh.Vertex, "color"),
+    );
+
+    // Setup IBO with index data
+    gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.BufferData(gl.ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(hexagon_mesh.indices)), &hexagon_mesh.indices, gl.STATIC_DRAW);
+}
+
+/// Render one frame
+fn renderFrame() !void {
+    // Clear screen
+    gl.ClearColor(1, 1, 1, 1);
+    gl.Clear(gl.COLOR_BUFFER_BIT);
+
+    // Use shader program
+    gl.UseProgram(program);
+    defer gl.UseProgram(0);
+
+    // Update viewport and uniforms
+    var fb_width: c_int = undefined;
+    var fb_height: c_int = undefined;
+    try errify(c.SDL_GetWindowSizeInPixels(window, &fb_width, &fb_height));
+    gl.Viewport(0, 0, fb_width, fb_height);
+    gl.Uniform2f(framebuffer_size_uniform, @floatFromInt(fb_width), @floatFromInt(fb_height));
+
+    // Rotate hexagon (one revolution per minute)
+    const seconds = @as(f32, @floatFromInt(uptime.read())) / std.time.ns_per_s;
+    gl.Uniform1f(angle_uniform, seconds / 60 * -std.math.tau);
+
+    // Draw hexagon
+    gl.BindVertexArray(vao);
+    defer gl.BindVertexArray(0);
+    gl.DrawElements(gl.TRIANGLES, hexagon_mesh.indices.len, gl.UNSIGNED_BYTE, 0);
+
+    // Swap buffers
+    try errify(c.SDL_GL_SwapWindow(window));
+}
+
+// ============================================================================
+// SDL APPLICATION LIFECYCLE
+// ============================================================================
+
+fn sdlAppInit(appstate: ?*?*anyopaque, argv: [][*:0]u8) !c.SDL_AppResult {
+    _ = appstate;
+    _ = argv;
+
+    std.log.debug("{s} {s}", .{ target_triple, @tagName(builtin.mode) });
+
+    // Initialize SDL and window
+    try initSDL();
+    try configureOpenGLAttributes();
+    try createWindow();
+    errdefer {
+        errify(c.SDL_GL_DestroyContext(gl_context)) catch {};
+        c.SDL_DestroyWindow(window);
+    }
+
+    // Initialize OpenGL
+    try initOpenGL();
+    errdefer gl.makeProcTableCurrent(null);
+
+    // Create graphics resources
+    program = try createShaderProgram();
+    errdefer gl.DeleteProgram(program);
 
     framebuffer_size_uniform = gl.GetUniformLocation(program, "u_FramebufferSize");
     angle_uniform = gl.GetUniformLocation(program, "u_Angle");
 
-    gl.GenVertexArrays(1, (&vao)[0..1]);
-    errdefer gl.DeleteVertexArrays(1, (&vao)[0..1]);
-
-    gl.GenBuffers(1, (&vbo)[0..1]);
-    errdefer gl.DeleteBuffers(1, (&vbo)[0..1]);
-
-    gl.GenBuffers(1, (&ibo)[0..1]);
-    errdefer gl.DeleteBuffers(1, (&ibo)[0..1]);
-
-    {
-        // Make the VAO the current global VAO.
-        // Unbind it when we're done so that we don't end up inadvertently modifying it later.
-        gl.BindVertexArray(vao);
-        defer gl.BindVertexArray(0);
-
-        {
-            // Ditto for the VBO.
-            gl.BindBuffer(gl.ARRAY_BUFFER, vbo);
-            defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
-
-            // Upload vertex data to the VBO.
-            gl.BufferData(
-                gl.ARRAY_BUFFER,
-                @sizeOf(@TypeOf(hexagon_mesh.vertices)),
-                &hexagon_mesh.vertices,
-                gl.STATIC_DRAW,
-            );
-
-            // Instruct the VAO on how vertex position data is laid out in memory.
-            const position_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Position"));
-            gl.EnableVertexAttribArray(position_attrib);
-            gl.VertexAttribPointer(
-                position_attrib,
-                @typeInfo(@FieldType(hexagon_mesh.Vertex, "position")).array.len,
-                gl.FLOAT,
-                gl.FALSE,
-                @sizeOf(hexagon_mesh.Vertex),
-                @offsetOf(hexagon_mesh.Vertex, "position"),
-            );
-
-            // Ditto for vertex colors.
-            const color_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Color"));
-            gl.EnableVertexAttribArray(color_attrib);
-            gl.VertexAttribPointer(
-                color_attrib,
-                @typeInfo(@FieldType(hexagon_mesh.Vertex, "color")).array.len,
-                gl.FLOAT,
-                gl.FALSE,
-                @sizeOf(hexagon_mesh.Vertex),
-                @offsetOf(hexagon_mesh.Vertex, "color"),
-            );
-        }
-
-        // Instruct the VAO to use our IBO, then upload index data to the IBO.
-        gl.BindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-        gl.BufferData(
-            gl.ELEMENT_ARRAY_BUFFER,
-            @sizeOf(@TypeOf(hexagon_mesh.indices)),
-            &hexagon_mesh.indices,
-            gl.STATIC_DRAW,
-        );
+    try setupBuffers(program);
+    errdefer {
+        gl.DeleteBuffers(1, (&ibo)[0..1]);
+        gl.DeleteBuffers(1, (&vbo)[0..1]);
+        gl.DeleteVertexArrays(1, (&vao)[0..1]);
     }
 
-    uptime = try .start();
-
+    uptime = try std.time.Timer.start();
     fully_initialized = true;
-    errdefer comptime unreachable;
 
     return c.SDL_APP_CONTINUE;
 }
 
 fn sdlAppIterate(appstate: ?*anyopaque) !c.SDL_AppResult {
     _ = appstate;
-
-    {
-        // Clear the screen to white.
-        gl.ClearColor(1, 1, 1, 1);
-        gl.Clear(gl.COLOR_BUFFER_BIT);
-
-        gl.UseProgram(program);
-        defer gl.UseProgram(0);
-
-        // Make sure any changes to the window size are reflected by the framebuffer size uniform.
-        var fb_width: c_int = undefined;
-        var fb_height: c_int = undefined;
-        try errify(c.SDL_GetWindowSizeInPixels(window, &fb_width, &fb_height));
-        gl.Viewport(0, 0, fb_width, fb_height);
-        gl.Uniform2f(framebuffer_size_uniform, @floatFromInt(fb_width), @floatFromInt(fb_height));
-
-        // Rotate the hexagon clockwise at a rate of one complete revolution per minute.
-        const seconds = @as(f32, @floatFromInt(uptime.read())) / std.time.ns_per_s;
-        gl.Uniform1f(angle_uniform, seconds / 60 * -std.math.tau);
-
-        gl.BindVertexArray(vao);
-        defer gl.BindVertexArray(0);
-
-        // Draw the hexagon!
-        gl.DrawElements(gl.TRIANGLES, hexagon_mesh.indices.len, gl.UNSIGNED_BYTE, 0);
-    }
-
-    // Display the drawn content.
-    try errify(c.SDL_GL_SwapWindow(window));
-
+    try renderFrame();
     return c.SDL_APP_CONTINUE;
 }
 
