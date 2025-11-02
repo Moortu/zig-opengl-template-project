@@ -65,7 +65,7 @@ pub fn build(b: *std.Build) void {
 
         const app_lib = b.addLibrary(.{
             .linkage = .static,
-            .name = "opengl_hexagon",
+            .name = "learn_opengl",
             .root_module = app_mod,
         });
         app_lib.lto = lto;
@@ -128,7 +128,7 @@ pub fn build(b: *std.Build) void {
         )));
 
         run_emcc.addArg("-o");
-        const app_html = run_emcc.addOutputFileArg("opengl_hexagon.html");
+        const app_html = run_emcc.addOutputFileArg("learn_opengl.html");
 
         b.getInstallStep().dependOn(&b.addInstallDirectory(.{
             .source_dir = app_html.dirname(),
@@ -137,7 +137,7 @@ pub fn build(b: *std.Build) void {
         }).step);
 
         const run_emrun = b.addSystemCommand(&.{"emrun"});
-        run_emrun.addArg(b.pathJoin(&.{ b.install_path, "www", "opengl_hexagon.html" }));
+        run_emrun.addArg(b.pathJoin(&.{ b.install_path, "www", "learn_opengl.html" }));
         if (b.args) |args| run_emrun.addArgs(args);
         run_emrun.step.dependOn(b.getInstallStep());
 
@@ -146,7 +146,7 @@ pub fn build(b: *std.Build) void {
         // Build for desktop.
 
         const app_exe = b.addExecutable(.{
-            .name = "opengl_hexagon",
+            .name = "learn_opengl",
             .root_module = app_mod,
         });
         app_exe.lto = lto;
