@@ -1,0 +1,6 @@
+# Dependencies
+deps/
+
+# Generated files
+zig-out/
+.zig-cache/
